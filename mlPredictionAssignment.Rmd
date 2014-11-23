@@ -1,0 +1,188 @@
+---
+title: "Prediction Assignment"
+author: "Jared Bowden"
+date: "11/20/2014"
+output: html_document
+---
+
+# Prediction assignment
+
+## Abstract
+The goal of this exercise was to use sensor information from wearable data 
+logging devices to predict the activity-type (6 different categories, as 
+described here: http://groupware.les.inf.puc-rio.br/har) that human 
+participants are engaged in.
+
+For a full description of the experimental design and a copy of the data, see 
+here: http://groupware.les.inf.puc-rio.br/har
+
+## Reference
+Ugulino, W.; Cardador, D.; Vega, K.; Velloso, E.; Milidiu, R.; Fuks, H. Wearable 
+Computing: Accelerometers' Data Classification of Body Postures and Movements. 
+Proceedings of 21st Brazilian Symposium on Artificial Intelligence. Advances in 
+Artificial Intelligence - SBIA 2012. In: Lecture Notes in Computer Science. , pp. 
+52-61. Curitiba, PR: Springer Berlin / Heidelberg, 2012. ISBN 978-3-642-34458-9. 
+DOI: 10.1007/978-3-642-34459-6_6. 
+
+## Setup
+Let's start by loading up the packages we will be using to examine our dataset, 
+and build a prediction algorithm.
+```{r load packages}
+require(caret)
+require(doMC)
+
+# Here, we are going to assign 3 cpu cores 
+registerDoMC(3)
+```
+
+Now, set the working directory and reading in the test and train data sets. 
+```{r setup}
+# Set the working directory
+setwd("~/Dropbox/Code/Practical_machine_learning/courseAssignment/")
+
+# Read in the test and training sets
+training <- read.csv("./data/pml-training.csv")
+testing <- read.csv("./data/pml-testing.csv")
+```
+
+## Preprocessing
+Let's have a quick look at the raw data, and the features we at our disposal
+```{r review}
+# Variables present within the dataset
+names(training)
+
+# And check the dimensions of the data frame
+dim(training) #19622 rows, 160 columns
+
+# A quick review of the data structure
+str(training)
+```
+
+From the previous code block, we can see that are a number of variables that 
+include NA values. Let's take a closer look at this.
+```{r data integrity}
+# Check for NA values
+colSums(is.na(training))
+```
+
+Fortunately (depending on your perspective), it would appear that this is an
+all-or-nothing situation: if a variable has NA values, ALL of the values are
+NA. With partially complete variables we might consider imputing missing 
+values. Here, we just need to exclude these entire features from the data set.
+
+```{r remove NA values}
+# Remove columns with NA values
+cleanTraining <- training[colSums(is.na(training)) < 1]
+
+# And now, let's confirm that this worked
+colSums(is.na(cleanTraining)) #Looks good
+
+# How many features remain?
+dim(cleanTraining) #93
+```
+
+At this point, we should consider curating our features and removing
+features that have low variance.
+```{r check for low variance features}
+# Remove variables with low or no variance
+lowVar <- nearZeroVar(cleanTraining)
+trainingSub <- cleanTraining[ , -lowVar]
+
+# And have a look at how this has impacted our dataframe
+dim(trainingSub) #59 features remain
+
+# We will need to determine WHICH variables were removed -- the same variables
+# will need to be removed from the test set.
+cleanList <- colnames(trainingSub)
+
+# And now find the index for each of these items.
+cleanIndex <- which(colnames(training) %in% cleanList)
+
+# We can use this index to curate the test set in the same way that we did
+# with the training set.
+
+# From what I've been reading in the discussion forums, there is some 
+# contention about the use of the first 7 features of the data frame. These
+# are time stamps and identification variables -- not direct senor output.
+# For the purposes of this model, I am going to exclude these variabels.
+finalTraining <- trainingSub[ ,7:length(colnames(trainingSub))]
+```
+
+## Algorithm selection
+I have opted to use a random forest algorithm to fit this data set. This 
+decision was initially motivated by the ability of this model to work with 
+categorical variables. 
+
+I had originally intended to conduct some additional steps to select-and 
+-standardize standardizing numeric features (center and scale to standardize, 
+principal component analysis to identify variables that explain the largest
+variance. These measures resulted in a prohibitively long run-time,
+and did not result in significant gains for in sample error as measured with
+the training set, or the validation set.
+
+For the first phase of algorithm development, I am going to create a 
+validation set (40%) to get a better idea of the in sample error of my proposed
+model.
+
+## Cross validation
+Split the training data to create a validation set
+```{r validation set}
+set.seed(6666)
+
+# Partition the training dataset to make a validation set
+inTrain <- createDataPartition(finalTraining$classe, p = 0.6, list = FALSE)
+cTrain <- finalTraining[inTrain, ]
+cValidate <- finalTraining[-inTrain, ]
+```
+
+Fit a model for cross validation
+```{r fit model for cross validation}
+# Fit the model
+resampleNum = trainControl(number = 5)
+modelFit1 <- train(classe ~ ., method ="rf", trainControl = resampleNum,
+                   data = cTrain)
+                   
+# Have a look at the in sample error
+modelFit1
+```
+This in sample error is looking pretty good (max ~0.99). I think this model 
+is sufficient to move ahead and evaluate with cross validation
+
+Evualuate the result of cross-validation
+```{r cross validation}
+# Predict, and evaluate by using the validation set
+cPrediction <- predict(modelFit1, cValidate)
+confusionMatrix(cPrediction, cValidate$classe)
+```
+The model returns almost perfect results for cross validation... Which feels a 
+little too good to be true. However, if this in sample error is valid, we can 
+expect a good result (low out of sample error) for our test set.
+
+Let's move ahead and fit a final model to use for our test set prediction. To
+Do this, we will use the FULL training set.
+
+## Final model
+```{r fit the final model}
+# Fit the final model on all of the training data
+modelFitFinal <- train(classe ~ ., method ="rf", trainControl = resampleNum,
+                       data = finalTraining)
+
+# Check the in sample error
+modelFitFinal
+```
+Once again, the in sample error is looking healthy; this bodes well for the 
+performance of the model, and the subsequent out of sample error we will see on 
+the test set.
+
+## Final prediction  
+```{r prediction}
+# Predict on the test set, and evaluate the outcome
+finalPrediction <- predict(modelFitFinal, newdata = testing)
+
+# Check the outcome of the prediction
+finalPrediction
+```
+
+## Results
+The model predicted "classe" test set outcomes with 100% accuracy, as 
+evaluated by the Practical Machine Learning course page. 
